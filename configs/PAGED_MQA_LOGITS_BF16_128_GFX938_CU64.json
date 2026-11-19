@@ -1,0 +1,14 @@
+{
+  "kernel": "paged_mqa_logits",
+  "dtype": "bf16",
+  "arch": "gfx938",
+  "num_cus": 64,
+  "num_heads": 32,
+  "head_dim": 128,
+  "block_kv": 64,
+  "next_n": 1,
+  "group_rows": 3,
+  "min_rows": 24,
+  "group_kernel": "paged_mqa_logits_bf16_grouped",
+  "_comment": "kGroupRows consecutive query rows share one 64-token KV page per wave when their block-table entries agree (the EAGLE verify tokens of a request always do), so the KV tile, its LDS reads and the per-tile sequence are paid once for kGroupRows rows. Measured 192 rows: 1.383 -> 0.878 ms at 32K and 5.54 -> 2.98 ms at 128K, bit-identical to paged_mqa_logits. Set group_rows to 0 to keep the ungrouped kernel."
+}

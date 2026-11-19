@@ -1,0 +1,15 @@
+{
+  "kernel": "paged_mqa_logits",
+  "dtype": "int8",
+  "layout": "pooled_kv4_132B",
+  "arch": "gfx938",
+  "num_cus": 64,
+  "num_heads": 32,
+  "head_dim": 128,
+  "block_kv": 16,
+  "next_n": 1,
+  "group_rows": 3,
+  "min_rows": 24,
+  "min_pooled_ctx": 16384,
+  "_comment": "Pooled index-K (kpool=4, 132 B per pooled token). Consecutive rows share a 16-token pooled page when the page-table entries agree, so one page load serves kGroupRows rows. Enabled when pooled context >= min_pooled_ctx or rows >= 96; measured 192 rows: 0.210 -> 0.176 ms at 32K (8192 pooled tokens) and 0.814 -> 0.576 ms at 128K, bit-identical. Set group_rows to 0 to disable."
+}
