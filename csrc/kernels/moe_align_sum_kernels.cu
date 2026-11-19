@@ -397,8 +397,20 @@ __global__ void moe_align_block_size_kernel(
     int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
     int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
     size_t numel, int32_t *__restrict__ cumsum,
-    int32_t *__restrict__ expert_map) {
+    int32_t *__restrict__ expert_map, int32_t sorted_token_ids_len,
+    bool Is_fuse_fill) {
   extern __shared__ int32_t shared_counts[];
+
+  // Same padding initialization as the small-batch path: the sorted ids are
+  // later consumed by kernels that require every non-token slot to hold the
+  // sentinel `numel`.
+  if (Is_fuse_fill) {
+    for (size_t i = threadIdx.x; i < static_cast<size_t>(sorted_token_ids_len);
+         i += blockDim.x) {
+      sorted_token_ids[i] = static_cast<int32_t>(numel);
+    }
+    __syncthreads();
+  }
 
   const int warp_id = threadIdx.x / WARP_SIZE;
   const int my_expert_start = warp_id * experts_per_warp;
@@ -1036,9 +1048,22 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
     const scalar_t *__restrict__ topk_ids,
     int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ expert_ids,
     int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
-    int32_t block_size, size_t numel, const int32_t *__restrict__ expert_map) {
+    int32_t block_size, size_t numel, const int32_t *__restrict__ expert_map,
+    int32_t sorted_token_ids_len, bool Is_fuse_fill) {
   const size_t tid = threadIdx.x;
   const size_t stride = blockDim.x;
+
+  // Initialize every slot to the padding sentinel (numel) before the real
+  // token ids are scattered below. Without this, the padding slots inside the
+  // block-aligned ranges keep uninitialized memory, and the Marlin MoE decode
+  // kernels only clamp the upper bound of token ids (a negative garbage value
+  // becomes a wild global-memory offset).
+  if (Is_fuse_fill) {
+    for (int32_t i = static_cast<int32_t>(tid); i < sorted_token_ids_len;
+         i += static_cast<int32_t>(stride)) {
+      sorted_token_ids[i] = static_cast<int32_t>(numel);
+    }
+  }
 
   extern __shared__ int32_t shared_mem[];
   int32_t *cumsum = shared_mem;
@@ -1241,7 +1266,8 @@ void moe_align_block_size(
               num_tokens_post_pad.data_ptr<int32_t>(), num_experts, block_size,
               topk_ids.numel(),
               expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                     : nullptr);
+                                     : nullptr,
+              static_cast<int32_t>(sorted_token_ids.numel()), Is_fuse_fill);
         } else {
             int template_capacity = 0;
             if (num_experts > 64 && num_experts <= 128) {
@@ -1291,7 +1317,9 @@ void moe_align_block_size(
                     padded_num_experts, experts_per_warp, block_size,
                     topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
                     expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                           : nullptr);
+                                           : nullptr,
+                    static_cast<int32_t>(sorted_token_ids.numel()),
+                    Is_fuse_fill);
 
                 const int block_threads = std::min(256, (int)threads);
                 const int num_blocks =
