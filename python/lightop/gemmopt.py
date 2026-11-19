@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List, NamedTuple
 #from lightop import op
 from . import op
 import functools
+import json
 import os
 import math
 from .config_smooth_gemm import (
@@ -1027,6 +1028,50 @@ def _use_page_mqa_logits_sparse_mask(
     return True
 
 
+# --- gfx938 paged-MQA logits tuning tables -------------------------------
+# The grouped KV-reuse dispatch in csrc/mqa_logits/paged/paged_mqa_logits_grouped.cu
+# is configured through environment variables.  Load the packaged gfx938 tables
+# once (unless the caller already set an override) so the tuning lives in
+# configs/ next to the other per-shape tables.
+_PAGED_MQA_GROUP_ENV_APPLIED = False
+
+
+def _apply_paged_mqa_group_env() -> None:
+    global _PAGED_MQA_GROUP_ENV_APPLIED
+    if _PAGED_MQA_GROUP_ENV_APPLIED:
+        return
+    _PAGED_MQA_GROUP_ENV_APPLIED = True
+    if os.getenv("LIGHTOP_PAGED_MQA_LOGITS_GROUP_TABLES", "1") != "1":
+        return
+    try:
+        from .utils import resource_path
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        arch = props.gcnArchName.split(":")[0].upper()
+        cus = props.multi_processor_count
+        tables = (
+            (f"PAGED_MQA_LOGITS_BF16_128_{arch}_CU{cus}.json",
+             (("group_rows", "LIGHTOP_PAGED_MQA_LOGITS_GROUP_BF16"),
+              ("min_rows", "LIGHTOP_PAGED_MQA_LOGITS_GROUP_MIN_ROWS"))),
+            (f"PAGED_MQA_LOGITS_INT8_POOLED_128_{arch}_CU{cus}.json",
+             (("group_rows", "LIGHTOP_PAGED_MQA_LOGITS_GROUP_INT8"),
+              ("min_rows", "LIGHTOP_PAGED_MQA_LOGITS_GROUP_MIN_ROWS"),
+              ("min_pooled_ctx",
+               "LIGHTOP_PAGED_MQA_LOGITS_GROUP_INT8_MIN_POOL_CTX"))),
+        )
+        for file_name, keys in tables:
+            path = resource_path("configs", file_name)
+            if not os.path.exists(path):
+                continue
+            with open(path) as handle:
+                table = json.load(handle)
+            for key, env in keys:
+                if key in table and not os.getenv(env):
+                    os.environ[env] = str(table[key])
+    except Exception:
+        # Tuning is optional: any failure leaves the default kernels active.
+        pass
+
+
 def paged_mqa_logits(
         q: torch.Tensor,
         fused_kv_cache: torch.Tensor,
@@ -1037,6 +1082,8 @@ def paged_mqa_logits(
         max_context_len: int,
         clean_logits: bool = True,
         is_prefill: bool = False) -> torch.Tensor:
+    if not is_prefill:
+        _apply_paged_mqa_group_env()
     if (fused_kv_cache.dtype == torch.uint8
         and q.dtype == torch.float8_e4m3fn):
         arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]

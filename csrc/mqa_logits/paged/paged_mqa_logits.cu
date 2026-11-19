@@ -6,6 +6,7 @@
 #include "paged_mqa_logits_impl.hpp"
 #include "paged_mqa_logits_fp8_impl.hpp"
 #include "paged_mqa_logits_int8_impl.hpp"
+#include "paged_mqa_logits_grouped.h"
 
 #include "hip/hip_runtime.h"
 #include "hip/hip_fp16.h"
@@ -301,6 +302,16 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     LIGHTOP_HOST_ASSERT(weights.scalar_type() == torch::kFloat);
     LIGHTOP_HOST_ASSERT(context_lens.scalar_type() == torch::kInt32);
     LIGHTOP_HOST_ASSERT(block_table.scalar_type() == torch::kInt32);
+
+    // Opt-in grouped KV-reuse kernel (bit-identical, see
+    // paged_mqa_logits_grouped.cu).  Falls through for every unsupported
+    // layout, dtype or device.
+    if (auto grouped = maybe_paged_mqa_logits_grouped(
+            q, fused_kv_cache, weights, context_lens, block_table,
+            max_context_len, clean_logits, use_meta);
+        grouped.has_value()) {
+        return grouped.value();
+    }
 
     torch::Tensor kv_cache_scales;
     torch::Tensor kv_cache;
