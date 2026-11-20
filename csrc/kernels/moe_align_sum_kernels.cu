@@ -32,6 +32,14 @@ __global__ void moe_align_block_size_kernel_opt_fused_small_size(
   const int topk_numel = numel;
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
+      if (Is_fuse_fill) {
+        for (int i = threadIdx.x; i < sorted_token_ids_len; i += blockDim.x) {
+          sorted_token_ids[i] = topk_numel;
+        }
+      }
+      if (threadIdx.x == 0) {
+        total_tokens_post_pad[0] = 0;
+      }
       return;
     } else {
       numel = num_local_tokens[0] * TOPK;
@@ -158,6 +166,14 @@ __global__ void moe_align_block_size_kernel_opt_fused_cub(
   const int topk_numel = numel;
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
+      if (Is_fuse_fill) {
+        for (int i = threadIdx.x; i < sorted_token_ids_len; i += blockDim.x) {
+          sorted_token_ids[i] = topk_numel;
+        }
+      }
+      if (threadIdx.x == 0) {
+        total_tokens_post_pad[0] = 0;
+      }
       return;
     } else {
       numel = num_local_tokens[0] * TOPK;
@@ -278,6 +294,16 @@ __global__ void moe_align_block_size_kernel_opt_cub(
     size_t effective_numel = numel;
     if (num_local_tokens != nullptr) {
         if (num_local_tokens[0] == 0) {
+            const size_t gtid = blockIdx.x * blockDim.x + threadIdx.x;
+            const size_t gstride = blockDim.x * gridDim.x;
+            if (Is_fuse_fill) {
+                for (size_t i = gtid; i < static_cast<size_t>(sorted_token_ids_len); i += gstride) {
+                    sorted_token_ids[i] = topk_numel;
+                }
+            }
+            if (gtid == 0) {
+                total_tokens_post_pad[0] = 0;
+            }
             return;
         } else {
             effective_numel = num_local_tokens[0] * TOPK;
